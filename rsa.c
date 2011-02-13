@@ -1,0 +1,180 @@
+/* rsa.c
+ *
+ * Copyright 2011 Brian Swetland. All rights reserved.
+ *
+ * Redistribution and use in source and binary forms, with or without 
+ * modification, are permitted provided that the following conditions
+ * are met:
+ *
+ * 1. Redistributions of source code must retain the above copyright
+ *    notice, this list of conditions and the following disclaimer.
+ *
+ * 2. Redistributions in binary form must reproduce the above copyright
+ *    notice, this list of conditions and the following disclaimer in
+ *    the documentation and/or other materials provided with the
+ *    distribution.
+ *
+ * THIS SOFTWARE IS PROVIDED BY THE AUTHOR ``AS IS'' AND ANY EXPRESS OR
+ * IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED
+ * WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+ * ARE DISCLAIMED. IN NO EVENT SHALL THE AUTHOR OR CONTRIBUTORS BE
+ * LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY,
+ * OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT
+ * OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR 
+ * BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY,
+ * WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE
+ * OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE,
+ * EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ *
+ */
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
+#include "crypto.h"
+#include "imath.h"
+
+static u8 message_template[256] = {
+	0x00,0x01,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,
+	0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,
+	0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,
+	0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,
+	0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,
+	0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,
+	0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,
+	0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,
+	0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,
+	0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,
+	0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,
+	0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,
+	0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,
+	0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,
+	0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,
+	0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,
+	0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0x00,
+	0x30,0x21,0x30,0x09,0x06,0x05,0x2b,0x0e,0x03,0x02,0x1a,0x05,0x00,
+	0x04,0x14,0xAA,0xAA,0xAA,0xAA,0xAA,0xAA,0xAA,0xAA,0xAA,0xAA,0xAA,
+	0xAA,0xAA,0xAA,0xAA,0xAA,0xAA,0xAA,0xAA,0xAA,
+};
+
+static int _rsa_sign(unsigned rsz, mpz_t *n, mpz_t *d,
+		     const u8 *msg, u8 *sig_out)
+{
+	int r = -1;
+	mpz_t m, s;
+	int sz;
+	
+	mp_int_init(&m);
+	mp_int_init(&s);
+	
+	if (mp_int_read_unsigned(&m, (u8*) msg, rsz))
+		goto fail;
+
+	if (mp_int_exptmod(&m, d, n, &s))
+		goto fail;
+
+	sz = mp_int_unsigned_len(&s);
+	if (sz > rsz)
+		goto fail;
+
+	memset(sig_out, 0, rsz);
+
+	if (mp_int_to_unsigned(&s, sig_out + (rsz - sz), sz))
+		goto fail;
+
+	r = 0;
+fail:
+	mp_int_clear(&m);
+	mp_int_clear(&s);
+	return r;
+}
+
+static int _rsa_verify(unsigned rsz, mpz_t *n, mpz_t *e,
+		       const u8 *sig, u8 *msg_out)
+{
+	int r = -1;
+	mpz_t m, s;
+	int sz;
+
+	mp_int_init(&m);
+	mp_int_init(&s);
+
+	if (mp_int_read_unsigned(&s, (u8*) sig, rsz))
+		goto fail;
+
+	if (mp_int_exptmod(&s, e, n, &m))
+		goto fail;
+
+	sz = mp_int_unsigned_len(&m);
+	if (sz > rsz)
+		goto fail;
+
+	memset(msg_out, 0, rsz);
+
+	if (mp_int_to_unsigned(&m, msg_out + (rsz - sz), rsz))
+		goto fail;
+
+	r = 0;
+fail:
+	mp_int_clear(&m);
+	mp_int_clear(&s);
+	return r;
+}
+
+int rsa_sign(struct rsa_private_key *private,
+	     const u8 *digest, u8 *signature_out)
+{
+	int r = -1;
+	mpz_t n, d;
+	unsigned rsz = 256;
+	u8 msg[256];
+
+	memcpy(msg, message_template, 256 - 20);
+	memcpy(msg + 256 - 20, digest, 20);
+
+	mp_int_init(&n);
+	mp_int_init(&d);
+
+	if (mp_int_read_unsigned(&n, private->n, private->n_sz))
+		goto fail;
+	if (mp_int_read_unsigned(&d, private->d, private->d_sz))
+		goto fail;
+	if (_rsa_sign(rsz, &n, &d, msg, signature_out))
+		goto fail;
+
+	r = 0;
+fail:
+	mp_int_clear(&n);
+	mp_int_clear(&d);
+	return 0;
+}
+
+int rsa_verify(struct rsa_public_key *public,
+               const u8 *digest, const u8 *signature, u32 slen)
+{
+	int r = -1;
+	mpz_t n, e;
+	unsigned rsz = 256;
+	u8 msg[256];
+
+	mp_int_init(&n);
+	mp_int_init(&e);
+
+	if (mp_int_read_unsigned(&n, public->n, public->n_sz))
+		goto fail;
+	if (mp_int_read_unsigned(&e, public->e, public->e_sz))
+		goto fail;
+	if (_rsa_verify(rsz, &n, &e, signature, msg))
+		goto fail;
+	if (memcmp(message_template, msg, 256 - 20))
+		goto fail;
+	if (memcmp(digest, msg + 256 - 20, 20))
+		goto fail;
+
+	r = 0;
+fail:
+	mp_int_clear(&n);
+	mp_int_clear(&e);
+	return r;
+}

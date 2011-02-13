@@ -1,0 +1,22 @@
+
+Some simple crypto tools focused on RSA signing and verification.
+
+This is an exercise in learning a bit more about how this stuff works.
+
+WARNING: This is very much a work in progress and you'd probably be
+wiser using more mature code from openssl's libcrypto or some other
+existing crypto library.
+
+WARNING: This code is not hardened against timing attacks and does
+not practice any paranoia in handling key matter.  I'd advise against
+using it for anything but verification.
+
+Most of this code is original, but these pieces come from other projects:
+
+imath.[ch] from http://spinning-yarns.org/michael/sw/imath/
+
+sha1.[ch] from http://android.git.kernel.org/platform/system/core.git
+
+Everything is under BSD-style licenses -- see individual source files
+for specific copyrights and licenses.
+
